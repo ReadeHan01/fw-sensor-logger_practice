@@ -1,4 +1,4 @@
-# ---- Build outputs ----
+# ===== Build outputs =====
 Debug/
 Release/
 */Debug/
@@ -13,12 +13,17 @@ Release/
 *.bin
 *.hex
 
-# ---- STM32CubeIDE / Eclipse ----
+# ===== STM32CubeIDE / Eclipse =====
 .metadata/
 .settings/
 *.launch
+.project
+.cproject
 
-# ---- OS / editor ----
+# ===== CubeMX generated =====
+*.ioc
+
+# ===== OS / editor =====
 .DS_Store
 Thumbs.db
 .vscode/
