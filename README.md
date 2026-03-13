@@ -15,7 +15,7 @@ Add ring buffer
 - Implement circular buffer
 - Handle buffer full condition (overwrite or drop)
 
-🔵 v4 (next)
+🟢 v4 (done)
 UART CLI
 
 - Receive string input
@@ -23,7 +23,7 @@ UART CLI
 - Print system status
 - Example commands: `status`, `start`, `stop`
 
-🔴 v5
+🔴 v5 (next)
 Reliability layer
 
 - Watchdog timer
