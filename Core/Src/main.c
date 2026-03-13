@@ -46,9 +46,9 @@
 /* USER CODE BEGIN PTD */
 // My sample type
 typedef struct {
-    uint32_t timestamp_ms; // e.g., HAL_GetTick()
-    float    temp1;
-    float    temp2;
+    uint32_t time_ms;      // e.g., HAL_GetTick()
+    float    therm_deg_c;  // thermistor temp
+    float    ldr_pct;      // photoresistor %
 } Sample;
 
 // Ring buffer
@@ -77,6 +77,11 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 volatile uint8_t interrupt_flag = 0;
 static Ring ringbuffer;
+Sample sample;
+
+uint8_t rx_char;
+char rx_buffer[64];
+uint8_t rx_index = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -86,7 +91,6 @@ static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM2_Init(void);
-
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -127,15 +131,18 @@ static inline void rb_exit_critical(uint32_t primask) {
 static inline void rb_init(Ring *rb){
 	memset(rb, 0, sizeof(*rb));
 }
+static inline void sample_init(Sample *sample){
+	memset(sample, 0, sizeof(*sample));
+}
 
 /* =======================
    Push (overwrite oldest if full)
    Producer: typically ISR
    ======================= */
-static inline void rb_push_overwrite(Ring *rb, const Sample *s){
+static inline void rb_push_overwrite(Ring *rb, const Sample *sample){
 	uint32_t key = rb_enter_critical();
 
-	rb->buf[rb->head] = *s;
+	rb->buf[rb->head] = *sample;
 	rb->head = (rb->head + 1u) & RB_MASK;
 
 	if(rb->count < RB_CAPACITY){
@@ -166,6 +173,20 @@ static inline bool rb_pop(Ring *rb, Sample *out){
 	return true;
 }
 
+static inline bool rb_peek_latest(Ring *rb, Sample *out){
+  uint32_t key = rb_enter_critical();
+  if(rb->count == 0u){
+    rb_exit_critical(key);
+    return false;
+  }
+
+  uint16_t latest_index = (rb->head + RB_CAPACITY - 1u) & RB_MASK;
+  *out = rb->buf[latest_index];
+
+  rb_exit_critical(key);
+  return true;
+}
+
 static bool read_therm_and_ldr(float *therm_c, float *ldr_pct)
 {
   uint16_t therm_adc = 0, ldr_adc = 0;
@@ -192,9 +213,63 @@ static bool read_therm_and_ldr(float *therm_c, float *ldr_pct)
   *ldr_pct = ((float)ldr_adc / 4095.0f) * 100.0f;
   return true;
 }
+
+void parse_command(char *cmd)
+{
+    char line[128];
+
+    if(strcmp(cmd, "start") == 0)
+    {
+        HAL_TIM_Base_Start_IT(&htim2);
+        uart_print("Starting...\r\n");
+    }
+    else if(strcmp(cmd, "stop") == 0)
+    {
+        HAL_TIM_Base_Stop_IT(&htim2);
+        uart_print("Stopping...\r\n");
+    }
+    else if (strcmp(cmd, "reset") == 0)
+    {
+        rb_init(&ringbuffer);
+        sample_init(&sample);
+        uart_print("Resetting...\r\n");
+    }
+    else if(strcmp(cmd, "status") == 0)
+    {
+        rb_peek_latest(&ringbuffer, &sample);
+        snprintf(line, sizeof(line), "time_ms = %lu, thermistor = %.2f, Photoresistor = %.2f%%\r\n", sample.time_ms, sample.therm_deg_c, sample.ldr_pct);
+        uart_print(line);  
+    }
+    else if(strcmp(cmd, "help") == 0)
+    {
+        uart_print("Commands:\r\n");
+        uart_print("  start  - Start sensor sampling\r\n");
+        uart_print("  stop   - Stop sensor sampling\r\n");
+        uart_print("  reset  - Clear ring buffer\r\n");
+        uart_print("  status - Show latest sensor reading\r\n");
+        uart_print("  help   - Show this message\r\n");
+    }
+    else
+    {
+    	uart_print("Unknown Command\r\n");
+    }
+}
+
+void process_char(char c)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t *)&c, 1, 10);
+    if(c == '\r' || c == '\n')
+    {
+        rx_buffer[rx_index] = '\0';
+        parse_command(rx_buffer);
+        rx_index = 0;
+    }
+    else
+    {
+        rx_buffer[rx_index++] = c;
+    }
+}
 /* USER CODE END 0 */
-
-
 
 /**
   * @brief  The application entry point.
@@ -208,8 +283,7 @@ int main(void)
 	// last_print: last time I printed to UART (ms)
 	//uint32_t last_blink = 0;
 	//uint32_t last_print = 0;
-  char line[128];
-  Sample s;
+	//char line[128];
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -235,27 +309,30 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_Base_Start_IT(&htim2);
+  //HAL_TIM_Base_Start_IT(&htim2);
+  HAL_UART_Receive_IT(&huart2, &rx_char, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while(1){
-	  if(interrupt_flag){
-		  interrupt_flag--;
-		    s.timestamp_ms = HAL_GetTick();
+  while (1) {
+    if (interrupt_flag) {
+      interrupt_flag--;
+      sample.time_ms = HAL_GetTick();
 
-		    if(read_therm_and_ldr(&s.temp1, &s.temp2)){
-		    rb_push_overwrite(&ringbuffer, &s);
-		    }
-	  }
-    while (rb_pop(&ringbuffer, &s)){
-      snprintf(line, sizeof(line), "timestamp_ms = %lu, thermistor = %.2f, Photoresistor = %.2f%%\r\n", s.timestamp_ms, s.temp1, s.temp2);
+      if (read_therm_and_ldr(&sample.therm_deg_c, &sample.ldr_pct)) {
+        rb_push_overwrite(&ringbuffer, &sample);
+      }
+    }
+    /*
+    while (rb_pop(&ringbuffer, &sample)) {
+      snprintf(line, sizeof(line), "time_ms = %lu, thermistor = %.2f, Photoresistor = %.2f%%\r\n", sample.time_ms, sample.therm_deg_c, sample.ldr_pct);
       uart_print(line);
     }
-        HAL_Delay(1);
-        //------------------
-        /*
+    HAL_Delay(1);
+    */
+    //------------------
+    /*
 	  if(interrupt_flag){
 		  interrupt_flag--;
 		  HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
@@ -624,6 +701,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	interrupt_flag++;
   }
 }
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2)
+    {
+        process_char(rx_char);
+        HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+    }
+}
 /* USER CODE END 4 */
 
 /**
@@ -657,4 +743,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-
